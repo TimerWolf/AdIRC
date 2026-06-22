@@ -1,8 +1,8 @@
 ;######################################
 ; AdIRC: SiteInvite-Interface         #
-; Revision: 1                         #
+; Revision: 2                         #
 ; Date created: 05/09/2026            #
-; Date last modified: 05/09/2026      #
+; Date last modified: 22/06/2026      #
 ; Author: Whiskey                     #
 ; #####################################
 
@@ -2314,4 +2314,5 @@ on *:DIALOG:siteinviteDialog:close:*:{
 menu * {
   SiteInvite Manager
   .Open:/siteinvite
+  .Reload:load -rs $qt($scriptdir $+ SiteInvite.mrc)
 }
