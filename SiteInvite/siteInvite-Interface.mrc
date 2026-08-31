@@ -1,8 +1,8 @@
 ;######################################
 ; AdIRC: SiteInvite-Interface         #
-; Revision: 2                         #
+; Revision: 3                         #
 ; Date created: 05/09/2026            #
-; Date last modified: 22/06/2026      #
+; Date last modified: 31/08/2026      #
 ; Author: Whiskey                     #
 ; #####################################
 
@@ -718,6 +718,11 @@ on *:DIALOG:siteinviteDialog:sclick:100:{
   var %selectedSiteName = $did(siteinviteDialog,100).seltext
 
   if (!%selectedSiteName) {
+    return
+  }
+
+  ; Clicking the active site's checkbox must only update ignore_entire.
+  if (%selectedSiteName == %currentSiteName) {
     return
   }
 
