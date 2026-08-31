@@ -412,15 +412,12 @@ alias siteinvite_refresh_ui {
         var %line = $didwm(siteinviteDialog,110,# $+ %ign)
 
         if (%line) {
-
           did -s siteinviteDialog 110 %line
-
         }
 
         inc %y
 
       }
-
     }
 
   }
@@ -624,7 +621,7 @@ alias siteinvite_save {
 
     %channels = $addtok(%channels,%channel,44)
 
-    if ($did(siteinviteDialog,110,%i).cstate == 0) {
+    if ($did(siteinviteDialog,110,%i).cstate == 1) {
       %ignore = $addtok(%ignore,%channel,44)
     }
 
@@ -658,7 +655,7 @@ alias siteinvite_save {
     var %ftp = $did(siteinviteDialog,120,%i).text
     %ftps = $addtok(%ftps,%ftp,44)
 
-    if ($did(siteinviteDialog,120,%i).cstate == 0) {
+    if ($did(siteinviteDialog,120,%i).cstate == 1) {
       %ftpignore = $addtok(%ftpignore,%ftp,44)
     }
 
@@ -677,6 +674,7 @@ alias siteinvite_save {
   } else {
     remini %ini %currentSiteName ftpsites_ignore
   }
+
 }
 
 ; ------------------------------------------------------------------------------
@@ -849,6 +847,20 @@ on *:DIALOG:siteinviteDialog:sclick:100:{
 
   ; Load selected site from on ini
   siteinvite_load %selectedSiteName
+
+}
+
+; ------------------------------------------------------------------------------
+; Persist channel and FTP-site checkboxes independently of site selection.
+; ------------------------------------------------------------------------------
+
+on *:DIALOG:siteinviteDialog:sclick:110,120:{
+
+  if (!%currentSiteName || %isCurrentlyLoading) {
+    return
+  }
+
+  siteinvite_save
 
 }
 
@@ -1195,7 +1207,7 @@ on *:DIALOG:siteinviteDialog:sclick:201:{
   did -i siteinviteDialog 100 %selindex %newname
 
   if (%oldcheck == 1) {
-    did -s siteinviteDialog 100 %selindex
+    did -c siteinviteDialog 100 %selindex
   }
 
   ; Update current if it was the active site
