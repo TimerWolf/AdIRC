@@ -1,6 +1,6 @@
 ;######################################
 ; AdIRC: SiteInvite-Interface         #
-; Revision: 3                         #
+; Revision: 5                         #
 ; Date created: 05/09/2026            #
 ; Date last modified: 31/08/2026      #
 ; Author: Whiskey                     #
@@ -155,7 +155,7 @@ dialog siteinviteDialog {
   edit "",16,110 53 510 11,autohs
   button "...",17,630 53 40 11
 
-  text "Config folder:",30,25 75 75 9
+  text "Config file:",30,25 75 75 9
   edit "",31,110 73 510 11,autohs
   button "...",32,630 73 40 11
 
@@ -195,12 +195,13 @@ dialog siteinviteDialog {
 
 on *:DIALOG:siteinviteDialog:init:*:{
 
+  set %isCurrentlyLoading 1
   unset %currentSiteName
   unset %buf.Site.*
 
   did -r siteinviteDialog 102,104,106,110,120
 
-  var %iniFilePath = $qt($scriptdir $+ siteInvite-Sites.dat)
+  var %iniFilePath = $siteinvite_config_path
 
   set %siteInviteIniPath %iniFilePath
 
@@ -238,6 +239,9 @@ on *:DIALOG:siteinviteDialog:init:*:{
     safeWriteIni %ini Settings FlashFXPPath
   }
 
+  var %displayIniFilePath = $remove(%iniFilePath,$chr(34))
+  safeWriteIni %ini Settings ConfigFile %displayIniFilePath
+
   ; Read into buffer
   set %buf.Settings.Debug $readini(%iniFilePath,Settings,Debug)
   set %buf.Settings.Info $readini(%iniFilePath,Settings,Info)
@@ -267,6 +271,7 @@ on *:DIALOG:siteinviteDialog:init:*:{
 
   did -ra siteinviteDialog 11 %buf.Settings.BotNick
   did -ra siteinviteDialog 16 %buf.Settings.FlashFXP
+  did -ra siteinviteDialog 31 %displayIniFilePath
   did -c siteinviteDialog $iif(%buf.Settings.SyncMode == 1,14,13)
 
   ; Populate sites
@@ -313,6 +318,10 @@ on *:DIALOG:siteinviteDialog:init:*:{
 
   ; Update the UI
   did -ra siteinviteDialog 19 %checkMinutes
+
+  unset %iniFileMTime
+  GetData
+  unset %isCurrentlyLoading
 
 }
 
@@ -2074,6 +2083,59 @@ on *:DIALOG:siteinviteDialog:sclick:17:{
     save_settings
 
   }
+
+}
+
+; ------------------------------------------------------------------------------
+; Select the SiteInvite configuration file
+; ------------------------------------------------------------------------------
+
+on *:DIALOG:siteinviteDialog:sclick:32:{
+
+  var %newIniFilePath = $sfile(Select configuration file,*.dat)
+
+  if (%newIniFilePath) {
+    siteinvite_activate_config %newIniFilePath
+  }
+
+}
+
+on *:DIALOG:siteinviteDialog:edit:31:{
+
+  if (%isCurrentlyLoading) {
+    return
+  }
+
+  var %newIniFilePath = $did(siteinviteDialog,31).text
+
+  if ($lower($right(%newIniFilePath,4)) != .dat) {
+    return
+  }
+
+  if (!$pos(%newIniFilePath,$chr(92),1) && !$pos(%newIniFilePath,/,1)) {
+    %newIniFilePath = $scriptdir $+ %newIniFilePath
+  }
+
+  siteinvite_activate_config %newIniFilePath
+
+}
+
+alias siteinvite_activate_config {
+
+  var %newIniFilePath = $1-
+  var %currentIniFilePath = $remove(%siteInviteIniPath,$chr(34))
+
+  if (%newIniFilePath == %currentIniFilePath) {
+    return
+  }
+
+  set %iniFilePath $qt(%newIniFilePath)
+  set %siteInviteConfigPath %iniFilePath
+  unset %iniFileMTime
+
+  ; Closing saves the current file before reopening the selected configuration.
+  dialog -x siteinviteDialog
+  dialog -m siteinviteDialog siteinviteDialog
 
 }
 

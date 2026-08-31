@@ -1,8 +1,8 @@
 ;######################################
 ; AdIRC: SiteInvite-Code              #
-; Revision: 1                         #
+; Revision: 2                         #
 ; Date created: 05/09/2026            #
-; Date last modified: 05/09/2026      #
+; Date last modified: 31/08/2026      #
 ; Author: Whiskey                     #
 ; #####################################
 
@@ -16,8 +16,9 @@ on *:START:{
   ; Set default variables
   ; ----------------------------------------
 
-  ; Set file path
-  set %iniFilePath $qt($scriptdir $+ siteInvite-Sites.dat)
+  ; Use the selected configuration file, or the default .dat file.
+  set %siteInviteConfigPath $siteinvite_config_path
+  set %iniFilePath %siteInviteConfigPath
 
   ; Unset saved time
   unset %iniFileMTime
@@ -33,6 +34,17 @@ on *:START:{
   ; ----------------------------------------
 
   isCheckBotTimer
+
+}
+
+; Returns the active configuration file, falling back to the default .dat file.
+alias siteinvite_config_path {
+
+  if (%siteInviteConfigPath) {
+    return %siteInviteConfigPath
+  }
+
+  return $qt($scriptdir $+ siteInvite-Sites.dat)
 
 }
 
