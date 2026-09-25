@@ -1,8 +1,8 @@
 ;######################################
 ; AdIRC: SiteInvite-Interface         #
-; Revision: 5                         #
+; Revision: 6                         #
 ; Date created: 05/09/2026            #
-; Date last modified: 31/08/2026      #
+; Date last modified: 25/09/2026      #
 ; Author: Whiskey                     #
 ; #####################################
 
@@ -111,8 +111,9 @@ var %buf.Settings.Debug
 var %buf.Settings.Info
 var %buf.Settings.Code
 var %buf.Settings.Error
-var %buf.Settings.BotNick
 var %buf.Settings.CheckInterval
+var %buf.Settings.CheckUser
+var %buf.Settings.CheckBot
 var %buf.Settings.SyncMode
 var %buf.Settings.FlashFXP
 
@@ -141,15 +142,16 @@ dialog siteinviteDialog {
   check "  Code",3,105 30 40 10
   check "  Error",4,145 30 40 10
 
-  text "Botnick:",10,190 30 35 10
-  edit "",11,225 30 60 9,autohs
+  text "Check interval (min):",18,200 30 65 9
+  edit "",19,270 30 40 9,autohs
 
-  text "Check interval (min):",18,290 30 60 9
-  edit "",19,355 30 60 9,autohs
+  text "Check:",5,330 30 25 10
+  check " User",6,360 30 35 10
+  check " Bot",7,400 30 30 10
 
-  text "Synchronize mode:",12,550 30 55 9
-  radio " None",13,610 30 25 9
-  radio " All",14,645 30 25 9
+  text "Synchronize mode:",12,450 30 55 9
+  radio " None",13,510 30 25 9
+  radio " All",14,545 30 25 9
 
   text "FlashFXP Path:",15,25 55 75 9
   edit "",16,110 53 510 11,autohs
@@ -223,12 +225,16 @@ on *:DIALOG:siteinviteDialog:init:*:{
     safeWriteIni %ini Settings Error 0
   }
 
-  if ($readini(%ini,Settings,BotNick) == $null) {
-    safeWriteIni %ini Settings BotNick
-  }
-
   if ($readini(%ini,Settings,CheckInterval) == $null) {
     safeWriteIni %ini Settings CheckInterval 60
+  }
+
+  if ($readini(%ini,Settings,CheckUser) == $null) {
+    safeWriteIni %ini Settings CheckUser 1
+  }
+
+  if ($readini(%ini,Settings,CheckBot) == $null) {
+    safeWriteIni %ini Settings CheckBot 1
   }
 
   if ($readini(%ini,Settings,SyncMode) == $null) {
@@ -247,8 +253,9 @@ on *:DIALOG:siteinviteDialog:init:*:{
   set %buf.Settings.Info $readini(%iniFilePath,Settings,Info)
   set %buf.Settings.Code $readini(%iniFilePath,Settings,Code)
   set %buf.Settings.Error $readini(%iniFilePath,Settings,Error)
-  set %buf.Settings.BotNick $readini(%iniFilePath,Settings,BotNick)
   set %buf.Settings.CheckInterval $readini(%iniFilePath,Settings,CheckInterval)
+  set %buf.Settings.CheckUser $readini(%iniFilePath,Settings,CheckUser)
+  set %buf.Settings.CheckBot $readini(%iniFilePath,Settings,CheckBot)
   set %buf.Settings.SyncMode $readini(%iniFilePath,Settings,SyncMode)
   set %buf.Settings.FlashFXP $readini(%iniFilePath,Settings,FlashFXPPath)
 
@@ -269,7 +276,14 @@ on *:DIALOG:siteinviteDialog:init:*:{
     did -c siteinviteDialog 4
   }
 
-  did -ra siteinviteDialog 11 %buf.Settings.BotNick
+  if (%buf.Settings.CheckUser == 1) {
+    did -c siteinviteDialog 6
+  }
+
+  if (%buf.Settings.CheckBot == 1) {
+    did -c siteinviteDialog 7
+  }
+
   did -ra siteinviteDialog 16 %buf.Settings.FlashFXP
   did -ra siteinviteDialog 31 %displayIniFilePath
   did -c siteinviteDialog $iif(%buf.Settings.SyncMode == 1,14,13)
@@ -469,18 +483,6 @@ alias siteinvite_refresh_ui {
   }
 }
 
-on *:DIALOG:siteinviteDialog:edit:11:{
-
-  if (%isCurrentlyLoading) {
-    return
-  }
-
-  set %buf.Settings.BotNick $did(11).text
-
-  save_settings
-
-}
-
 ; ------------------------------------------------------------------------------
 ; Save check interval in settings
 ; ------------------------------------------------------------------------------
@@ -531,7 +533,7 @@ if (%minutes !isnum) {
   safeWriteIni %ini Settings CheckInterval %minutes
 
   ; Apply the new interval immediately
-  isCheckBotTimer
+  isCheckTimer
 
 }
 
@@ -548,10 +550,10 @@ on *:DIALOG:siteinviteDialog:sclick:13,14:{
 }
 
 ; ------------------------------------------------------------------------------
-; Save checkboxes in settings - debug / info / code / error
+; Save checkboxes in settings - debug / info / code / error / user / bot
 ; ------------------------------------------------------------------------------
 
-on *:DIALOG:siteinviteDialog:sclick:1,2,3,4:{
+on *:DIALOG:siteinviteDialog:sclick:1,2,3,4,6,7:{
 
   if (%isCurrentlyLoading) {
     return
@@ -560,17 +562,20 @@ on *:DIALOG:siteinviteDialog:sclick:1,2,3,4:{
   if ($did == 1) {
     set %buf.Settings.Debug $did($did).state
   }
-
-  if ($did == 2) {
+  elseif ($did == 2) {
     set %buf.Settings.Info $did($did).state
   }
-
-  if ($did == 3) {
+  elseif ($did == 3) {
     set %buf.Settings.Code $did($did).state
   }
-
-  if ($did == 4) {
+  elseif ($did == 4) {
     set %buf.Settings.Error $did($did).state
+  }
+  elseif ($did == 6) {
+    set %buf.Settings.CheckUser $did($did).state
+  }
+  elseif ($did == 7) {
+    set %buf.Settings.CheckBot $did($did).state
   }
 
   save_settings
@@ -589,7 +594,9 @@ alias save_settings {
   safeWriteIni %ini Settings Info %buf.Settings.Info
   safeWriteIni %ini Settings Code %buf.Settings.Code
   safeWriteIni %ini Settings Error %buf.Settings.Error
-  safeWriteIni %ini Settings BotNick %buf.Settings.BotNick
+  safeWriteIni %ini Settings CheckInterval %buf.Settings.CheckInterval
+  safeWriteIni %ini Settings CheckUser %buf.Settings.CheckUser
+  safeWriteIni %ini Settings CheckBot %buf.Settings.CheckBot
   safeWriteIni %ini Settings FlashFXPPath %buf.Settings.FlashFXP
   safeWriteIni %ini Settings SyncMode %buf.Settings.SyncMode
 
