@@ -1,8 +1,8 @@
 ;######################################
 ; AdIRC: SiteInvite-Code              #
-; Revision: 3                         #
+; Revision: 4                         #
 ; Date created: 05/09/2026            #
-; Date last modified: 25/09/2026      #
+; Date last modified: 28/09/2026      #
 ; Author: Whiskey                     #
 ; #####################################
 
@@ -38,6 +38,40 @@ on *:START:{
 
 }
 
+; ----------------------------------------
+; Event: triggered when connected to IRC
+; ----------------------------------------
+
+on *:CONNECT:{
+
+  ; Event: Ensure timer starts on network connection
+  isCheckTimer
+
+}
+
+
+; ----------------------------------------
+; Event: triggered when script is loaded
+; ----------------------------------------
+
+on *:LOAD:{
+
+  isCheckTimer
+
+}
+
+; ----------------------------------------
+; Event: triggered when disconnected from IRC
+; ----------------------------------------
+
+on *:DISCONNECT:{
+
+  ; Stop the check timer when offline to avoid unnecessary queueing
+  if ($timer(siteInviteCheck)) {
+    .timerSiteInviteCheck off
+
+  }
+}
 
 ; ----------------------------------------
 ; Alias: siteinvite_config_path
@@ -273,48 +307,35 @@ alias getAllSites {
 ; Description: Handles the timer for isCheck.
 ; ----------------------------------------
 
+; ----------------------------------------
+; Alias: isCheckTimer
+; Description: Keeps the background check running continuously every minute.
+; ----------------------------------------
+
 alias isCheckTimer {
 
+  ; Fetch check interval setting in minutes
   var %intervalMin = $GetSetting(CheckInterval)
 
-  ; Fallback.
-  if (!%intervalMin) {
-    %intervalMin = 60
-  }
-
-  ; Make sure the interval is at least one minute.
-  if (%intervalMin < 1) {
+  ; Fallback to 1 minute minimum if setting is missing or invalid
+  if (!%intervalMin || %intervalMin < 1) {
     %intervalMin = 1
   }
 
-  ; Recreate timer if the interval changed
-  ; or if the timer does not exist.
-  if (%intervalMin != %lastCheckInterval || !$timer(siteInviteCheck)) {
+  ; Convert minutes to seconds
+  var %intervalSec = $calc(%intervalMin * 60)
 
-    set %lastCheckInterval %intervalMin
+  ; Ensure timer is always active and running continuously
+  if (!$timer(siteInviteCheck)) {
 
-    ; Stop old timers.
-    .timerCheckBot off
-    .timerSiteInviteCheck off
+    ; Start background timer (0 = repeat infinitely)
+    .timerSiteInviteCheck 0 %intervalSec isCheck
 
-    ; Convert minutes to seconds.
-    var %intervalSec = $calc(%intervalMin * 60)
-
-    ; Safety net.
-    if (%intervalSec < 60) {
-      %intervalSec = 60
-    }
-
-    ; Start timer.
-    timerSiteInviteCheck 0 %intervalSec isCheck
-
-    ; Run the first check immediately.
+    ; Trigger the first execution immediately
     isCheck
 
   }
-
 }
-
 
 ; ----------------------------------------
 ; Backward compatibility aliases.
@@ -328,7 +349,6 @@ alias isCheckBotTimer {
 alias isTimerBot {
   isCheckTimer
 }
-
 
 ; =========================================================
 ; isCheck
