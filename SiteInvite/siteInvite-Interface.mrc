@@ -1,8 +1,8 @@
 ;######################################
 ; AdIRC: SiteInvite-Interface         #
-; Revision: 6                         #
+; Revision: 7                         #
 ; Date created: 05/09/2026            #
-; Date last modified: 25/09/2026      #
+; Date last modified: 03/10/2026      #
 ; Author: Whiskey                     #
 ; #####################################
 
@@ -99,12 +99,82 @@ alias addHashCSV {
 }
 
 ; ------------------------------------------------------------------------------
+; Normalize one channel name for storage/display.
+; ------------------------------------------------------------------------------
+
+alias siteinvite_clean_channel {
+
+  var %channel = $1-
+
+  while ($left(%channel,1) == $chr(32)) {
+    %channel = $mid(%channel,2)
+  }
+
+  while ($right(%channel,1) == $chr(32)) {
+    %channel = $left(%channel,$calc($len(%channel)-1))
+  }
+
+  ; Store channels without a leading '#'.
+  while ($left(%channel,1) == #) {
+    %channel = $mid(%channel,2)
+  }
+
+  return %channel
+
+}
+
+; ------------------------------------------------------------------------------
+; Normalize a channel CSV, including legacy values where two channel rows
+; were accidentally concatenated as '#channel1#channel2'.
+; ------------------------------------------------------------------------------
+
+alias siteinvite_normalize_channel_csv {
+
+  var %input = $1-
+  var %output
+  var %i = 1
+  var %count = $numtok(%input,44)
+
+  while (%i <= %count) {
+
+    var %token = $siteinvite_clean_channel($gettok(%input,%i,44))
+
+    while ($pos(%token,#,1)) {
+
+      var %hashPos = $pos(%token,#,1)
+      var %leftPart = $siteinvite_clean_channel($left(%token,$calc(%hashPos - 1)))
+      var %rightPart = $siteinvite_clean_channel($mid(%token,$calc(%hashPos + 1)))
+
+      if (%leftPart) {
+        %output = $addtok(%output,%leftPart,44)
+      }
+
+      %token = %rightPart
+
+    }
+
+    if (%token) {
+      %output = $addtok(%output,%token,44)
+    }
+
+    inc %i
+
+  }
+
+  return $sorttok(%output,44)
+
+}
+
+; ------------------------------------------------------------------------------
 ; Global variables
 ; ------------------------------------------------------------------------------
 
 var %siteInviteIniPath
 var %currentSiteName
 var %isCurrentlyLoading
+var %siteInvitePendingCurrentSite
+var %siteInvitePendingSelectedSite
+var %siteInvitePendingSelectedLine
 
 ; Buffer variables
 var %buf.Settings.Debug
@@ -116,10 +186,17 @@ var %buf.Settings.CheckUser
 var %buf.Settings.CheckBot
 var %buf.Settings.SyncMode
 var %buf.Settings.FlashFXP
+var %buf.Settings.BotNick
+var %buf.Settings.FTPUser
+var %buf.Settings.GlobalNick
+var %buf.Settings.FlashAppData
+var %buf.Settings.FTPCheck
 
 ; Buffer for site data
 var %buf.Site.Name
 var %buf.Site.BotNick
+var %buf.Site.UserNick
+var %buf.Site.FTPUser
 var %buf.Site.Network
 var %buf.Site.Channels
 var %buf.Site.Ignore
@@ -133,61 +210,82 @@ var %buf.Site.FTPSitesIgnore
 dialog siteinviteDialog {
 
   title "Site Invite Manager"
-  size -1 -1 720 420
+  size -1 -1 720 480
   option dbu
 
-  box "Settings",900,10 10 700 80
-  check "  Debug",1,25 30 40 10
-  check "  Info",2,70 30 35 10
-  check "  Code",3,105 30 40 10
-  check "  Error",4,145 30 40 10
+  box "Settings",900,10 10 700 120
+  check "  Debug",1,25 28 40 10
+  check "  Info",2,70 28 35 10
+  check "  Code",3,105 28 40 10
+  check "  Error",4,145 28 40 10
 
-  text "Check interval (min):",18,200 30 65 9
-  edit "",19,270 30 40 9,autohs
+  text "Check interval (min):",18,200 28 65 9
+  edit "",19,270 26 40 11,autohs
 
-  text "Check:",5,330 30 25 10
-  check " User",6,360 30 35 10
-  check " Bot",7,400 30 30 10
+  text "Check:",5,330 28 25 10
+  check " User",6,360 28 35 10
+  check " Bot",7,400 28 30 10
 
-  text "Synchronize mode:",12,450 30 55 9
-  radio " None",13,510 30 25 9
-  radio " All",14,545 30 25 9
+  text "Synchronize mode:",12,450 28 55 9
+  radio " None",13,510 28 25 9
+  radio " All",14,545 28 25 9
 
-  text "FlashFXP Path:",15,25 55 75 9
-  edit "",16,110 53 510 11,autohs
-  button "...",17,630 53 40 11
+  text "Global Nick:",20,25 46 60 9
+  edit "",21,90 44 130 11,autohs
 
-  text "Config file:",30,25 75 75 9
-  edit "",31,110 73 510 11,autohs
-  button "...",32,630 73 40 11
+  text "Global Bot:",26,235 46 70 9
+  edit "",27,310 44 130 11,autohs
 
-  box "Sites",50,10 100 700 310
-  list 100,25 120 180 260,vsbar sort check
-  button "Add",200,25 375 45 12
-  button "Edit",201,75 375 45 12
-  button "Delete",202,125 375 50 12
-  button "Close",203,630 375 60 14,cancel
+  check " Verify target before FTP",22,455 46 105 10
 
-  text "Name:",101,220 145 40 9
-  edit "",102,260 143 200 11
+  text "Global FTP-User:",28,25 60 60 9
+  edit "",29,90 58 130 11,autohs
 
-  text "Botnick:",103,480 145 45 9
-  edit "",104,530 143 130 11
+  text "FlashFXP Path:",15,25 77 75 9
+  edit "",16,110 75 510 11,autohs
+  button "...",17,630 75 40 11
 
-  text "Network:",105,220 165 50 9
-  edit "",106,275 163 180 11
+  text "FlashFXP Data Path:",23,25 92 85 9
+  edit "",24,110 90 510 11,autohs
+  button "...",25,630 90 40 11
 
-  text "Channels:",107,220 195 60 9
-  list 110,220 210 220 150,vsbar sort check
-  button "Add",113,220 375 45 12
-  button "Edit",114,270 375 45 12
-  button "Delete",115,320 375 50 12
+  text "Config file:",30,25 107 75 9
+  edit "",31,110 105 510 11,autohs
+  button "...",32,630 105 40 11
 
-  text "FTP-Sites:",117,460 195 60 9
-  list 120,460 210 220 150,vsbar sort check
-  button "Add",123,460 375 45 12
-  button "Edit",124,510 375 45 12
-  button "Delete",125,560 375 50 12
+  box "Sites",50,10 135 700 335
+  list 100,25 155 180 285,vsbar sort check
+  button "Add",200,25 443 45 12
+  button "Edit",201,75 443 45 12
+  button "Delete",202,125 443 50 12
+  button "Close",203,630 442 60 14,cancel
+
+  text "Name:",101,220 160 40 9
+  edit "",102,275 158 180 11,autohs
+
+  text "User:",103,480 160 35 9
+  edit "",108,530 158 130 11,autohs
+
+  text "Network:",105,220 180 50 9
+  edit "",106,275 178 180 11,autohs
+
+  text "Bot:",109,480 180 45 9
+  edit "",104,530 178 130 11,autohs
+
+  text "FTP-User:",129,220 200 55 9
+  edit "",112,275 198 180 11,autohs
+
+  text "Channels:",107,220 225 60 9
+  list 110,220 240 220 160,vsbar sort check
+  button "Add",113,220 415 45 12
+  button "Edit",114,270 415 45 12
+  button "Delete",115,320 415 50 12
+
+  text "FTP-Sites:",117,460 225 60 9
+  list 120,460 240 220 160,vsbar sort check
+  button "Add",123,460 415 45 12
+  button "Edit",124,510 415 45 12
+  button "Delete",125,560 415 50 12
 
 }
 
@@ -201,7 +299,7 @@ on *:DIALOG:siteinviteDialog:init:*:{
   unset %currentSiteName
   unset %buf.Site.*
 
-  did -r siteinviteDialog 102,104,106,110,120
+  did -r siteinviteDialog 102,104,106,108,112,110,120
 
   var %iniFilePath = $siteinvite_config_path
 
@@ -245,6 +343,26 @@ on *:DIALOG:siteinviteDialog:init:*:{
     safeWriteIni %ini Settings FlashFXPPath
   }
 
+  if ($readini(%ini,Settings,Nick) == $null) {
+    safeWriteIni %ini Settings Nick
+  }
+
+  if ($readini(%ini,Settings,BotNick) == $null) {
+    safeWriteIni %ini Settings BotNick
+  }
+
+  if ($readini(%ini,Settings,FTPUser) == $null) {
+    safeWriteIni %ini Settings FTPUser
+  }
+
+  if ($readini(%ini,Settings,FlashAppData) == $null) {
+    safeWriteIni %ini Settings FlashAppData
+  }
+
+  if ($readini(%ini,Settings,FTPCheck) == $null) {
+    safeWriteIni %ini Settings FTPCheck 0
+  }
+
   var %displayIniFilePath = $remove(%iniFilePath,$chr(34))
   safeWriteIni %ini Settings ConfigFile %displayIniFilePath
 
@@ -258,6 +376,17 @@ on *:DIALOG:siteinviteDialog:init:*:{
   set %buf.Settings.CheckBot $readini(%iniFilePath,Settings,CheckBot)
   set %buf.Settings.SyncMode $readini(%iniFilePath,Settings,SyncMode)
   set %buf.Settings.FlashFXP $readini(%iniFilePath,Settings,FlashFXPPath)
+  set %buf.Settings.GlobalNick $readini(%iniFilePath,Settings,Nick)
+  set %buf.Settings.BotNick $readini(%iniFilePath,Settings,BotNick)
+  set %buf.Settings.FTPUser $readini(%iniFilePath,Settings,FTPUser)
+  set %buf.Settings.FlashAppData $readini(%iniFilePath,Settings,FlashAppData)
+  set %buf.Settings.FTPCheck $readini(%iniFilePath,Settings,FTPCheck)
+
+  if (%buf.Settings.FTPCheck == $null) {
+    set %buf.Settings.FTPCheck 0
+  }
+
+  set %siteInviteFTPCheck %buf.Settings.FTPCheck
 
   ; GUI sync
   if (%buf.Settings.Debug == 1) {
@@ -285,8 +414,16 @@ on *:DIALOG:siteinviteDialog:init:*:{
   }
 
   did -ra siteinviteDialog 16 %buf.Settings.FlashFXP
+  did -ra siteinviteDialog 21 %buf.Settings.GlobalNick
+  did -ra siteinviteDialog 27 %buf.Settings.BotNick
+  did -ra siteinviteDialog 29 %buf.Settings.FTPUser
+  did -ra siteinviteDialog 24 %buf.Settings.FlashAppData
   did -ra siteinviteDialog 31 %displayIniFilePath
   did -c siteinviteDialog $iif(%buf.Settings.SyncMode == 1,14,13)
+
+  if (%buf.Settings.FTPCheck == 1) {
+    did -c siteinviteDialog 22
+  }
 
   ; Populate sites
   did -r siteinviteDialog 100
@@ -304,15 +441,30 @@ on *:DIALOG:siteinviteDialog:init:*:{
       var %ignore = $readini(%iniFilePath,%site,ignore_entire)
       var %lineNum = $didwm(siteinviteDialog,100,%site)
 
-      if (%ignore != 1) {
+      ; ignore_entire = 0 means the site is active and checked.
+      ; ignore_entire = 1 means the site is inactive and unchecked.
+      if (%ignore == 0 || %ignore == $null) {
         did -s siteinviteDialog 100 %lineNum
       } else {
-        did -c siteinviteDialog 100 %lineNum
+        did -l siteinviteDialog 100 %lineNum
       }
     }
 
     inc %i
 
+  }
+
+  ; Select and load the first configured site.
+  var %firstSite = $did(siteinviteDialog,100,1).text
+
+  if (%buf.Settings.GlobalNick) {
+    did -ra siteinviteDialog 108 %buf.Settings.GlobalNick
+  } else {
+    did -ra siteinviteDialog 108 $me
+  }
+
+  if (%firstSite) {
+    siteinvite_load %firstSite
   }
 
   ; Check interval
@@ -356,11 +508,29 @@ alias siteinvite_load {
 
   ; Load basic site fields
   set %buf.Site.Name     $iif($readini(%ini,$1,name),$v1,$1)
+  set %buf.Site.UserNick $readini(%ini,$1,usernick)
+  set %buf.Site.FTPUser  $readini(%ini,$1,ftpuser)
   set %buf.Site.BotNick  $readini(%ini,$1,botnick)
   set %buf.Site.Network  $readini(%ini,$1,network)
 
-  var %channels = $readini(%ini,%currentSiteName,channels)
-  var %ignore   = $readini(%ini,%currentSiteName,ignore)
+  if (!%buf.Site.UserNick) {
+    if (%buf.Settings.GlobalNick) {
+      set %buf.Site.UserNick %buf.Settings.GlobalNick
+    } else {
+      set %buf.Site.UserNick $me
+    }
+  }
+
+  if (!%buf.Site.FTPUser) {
+    if (%buf.Settings.FTPUser) {
+      set %buf.Site.FTPUser %buf.Settings.FTPUser
+    } else {
+      set %buf.Site.FTPUser %buf.Site.UserNick
+    }
+  }
+
+  var %channels = $siteinvite_normalize_channel_csv($readini(%ini,%currentSiteName,channels))
+  var %ignore   = $siteinvite_normalize_channel_csv($readini(%ini,%currentSiteName,ignore))
   var %ftps    = $readini(%ini,%currentSiteName,ftpsites)
   var %ftpign = $readini(%ini,%currentSiteName,ftpsites_ignore)
 
@@ -401,12 +571,17 @@ alias siteinvite_load {
 
 alias siteinvite_refresh_ui {
 
-  ; Updates chan/ignore lists and checkbox/edit fields
+  ; Updates active channel/FTP lists and checkbox/edit fields
   did -ra siteinviteDialog 102 %buf.Site.Name
-  did -ra siteinviteDialog 104 %buf.Site.BotNick
+  did -ra siteinviteDialog 108 %buf.Site.UserNick
+  did -ra siteinviteDialog 112 %buf.Site.FTPUser
   did -ra siteinviteDialog 106 %buf.Site.Network
+  did -ra siteinviteDialog 104 %buf.Site.BotNick
 
   ; Channels
+
+  set %buf.Site.Channels $siteinvite_normalize_channel_csv(%buf.Site.Channels)
+  set %buf.Site.Ignore $siteinvite_normalize_channel_csv(%buf.Site.Ignore)
 
   did -r siteinviteDialog 110
 
@@ -417,32 +592,55 @@ alias siteinvite_refresh_ui {
 
     while (%i <= %c) {
 
-      did -a siteinviteDialog 110 # $+ $gettok(%buf.Site.Channels,%i,44)
+      var %displayChannel = $gettok(%buf.Site.Channels,%i,44)
+
+      if ($left(%displayChannel,1) != #) {
+        %displayChannel = # $+ %displayChannel
+      }
+
+      did -a siteinviteDialog 110 %displayChannel
 
       inc %i
 
     }
 
-    ; Check ignored
-    if (%buf.Site.Ignore) {
+    ; Channels in "ignore" are inactive and must be unchecked.
+    var %lineCount = $did(siteinviteDialog,110).lines
+    var %lineIndex = 1
 
-      var %igncount = $numtok(%buf.Site.Ignore,44)
-      var %y = 1
+    while (%lineIndex <= %lineCount) {
 
-      while (%y <= %igncount) {
+      var %rowText = $did(siteinviteDialog,110,%lineIndex).text
+      var %rowClean = $remove(%rowText,#)
+      var %isIgnored = 0
 
-        var %ign = $gettok(%buf.Site.Ignore,%y,44)
-        var %line = $didwm(siteinviteDialog,110,# $+ %ign)
+      if (%buf.Site.Ignore) {
 
-        if (%line) {
-          did -s siteinviteDialog 110 %line
+        var %igncount = $numtok(%buf.Site.Ignore,44)
+        var %y = 1
+
+        while (%y <= %igncount) {
+          var %ign = $remove($gettok(%buf.Site.Ignore,%y,44),#)
+
+          if ($lower(%rowClean) == $lower(%ign)) {
+            %isIgnored = 1
+            break
+          }
+
+          inc %y
+
         }
-
-        inc %y
-
       }
-    }
 
+      if (%isIgnored) {
+        did -l siteinviteDialog 110 %lineIndex
+      } else {
+        did -s siteinviteDialog 110 %lineIndex
+      }
+
+      inc %lineIndex
+
+    }
   }
 
   ; Ftp-sites
@@ -461,24 +659,42 @@ alias siteinvite_refresh_ui {
 
     }
 
-    ; Check ignored
-    if (%buf.Site.FTPSitesIgnore) {
+    ; FTP entries in "ftpsites_ignore" are inactive and must be unchecked.
+    var %lineCount = $did(siteinviteDialog,120).lines
+    var %lineIndex = 1
 
-      var %igncount = $numtok(%buf.Site.FTPSitesIgnore,44)
-      var %y = 1
+    while (%lineIndex <= %lineCount) {
 
-      while (%y <= %igncount) {
+      var %rowText = $did(siteinviteDialog,120,%lineIndex).text
+      var %isIgnored = 0
 
-        var %ign = $gettok(%buf.Site.FTPSitesIgnore,%y,44)
-        var %line = $didwm(siteinviteDialog,120,%ign)
+      if (%buf.Site.FTPSitesIgnore) {
 
-        if (%line) {
-          did -s siteinviteDialog 120 %line
+        var %igncount = $numtok(%buf.Site.FTPSitesIgnore,44)
+        var %y = 1
+
+        while (%y <= %igncount) {
+
+          var %ign = $gettok(%buf.Site.FTPSitesIgnore,%y,44)
+
+          if ($lower(%rowText) == $lower(%ign)) {
+            %isIgnored = 1
+            break
+          }
+
+          inc %y
+
         }
-
-        inc %y
-
       }
+
+      if (%isIgnored) {
+        did -l siteinviteDialog 120 %lineIndex
+      } else {
+        did -s siteinviteDialog 120 %lineIndex
+      }
+
+      inc %lineIndex
+
     }
   }
 }
@@ -507,7 +723,7 @@ on *:DIALOG:siteinviteDialog:edit:19:{
   }
 
   ; Validate numeric using AdiIRC operator
-if (%minutes !isnum) {
+  if (%minutes !isnum) {
 
     ; Show a popup message instead of echo
     var %dummy = $input(Input value: check interval must be a number!, o, Check interval)
@@ -550,6 +766,23 @@ on *:DIALOG:siteinviteDialog:sclick:13,14:{
 }
 
 ; ------------------------------------------------------------------------------
+; Save FTP target verification setting
+; ------------------------------------------------------------------------------
+
+on *:DIALOG:siteinviteDialog:sclick:22:{
+
+  if (%isCurrentlyLoading) {
+    return
+  }
+
+  set %buf.Settings.FTPCheck $did(22).state
+  set %siteInviteFTPCheck %buf.Settings.FTPCheck
+
+  save_settings
+
+}
+
+; ------------------------------------------------------------------------------
 ; Save checkboxes in settings - debug / info / code / error / user / bot
 ; ------------------------------------------------------------------------------
 
@@ -561,20 +794,15 @@ on *:DIALOG:siteinviteDialog:sclick:1,2,3,4,6,7:{
 
   if ($did == 1) {
     set %buf.Settings.Debug $did($did).state
-  }
-  elseif ($did == 2) {
+  } elseif ($did == 2) {
     set %buf.Settings.Info $did($did).state
-  }
-  elseif ($did == 3) {
+  } elseif ($did == 3) {
     set %buf.Settings.Code $did($did).state
-  }
-  elseif ($did == 4) {
+  } elseif ($did == 4) {
     set %buf.Settings.Error $did($did).state
-  }
-  elseif ($did == 6) {
+  } elseif ($did == 6) {
     set %buf.Settings.CheckUser $did($did).state
-  }
-  elseif ($did == 7) {
+  } elseif ($did == 7) {
     set %buf.Settings.CheckBot $did($did).state
   }
 
@@ -598,6 +826,14 @@ alias save_settings {
   safeWriteIni %ini Settings CheckUser %buf.Settings.CheckUser
   safeWriteIni %ini Settings CheckBot %buf.Settings.CheckBot
   safeWriteIni %ini Settings FlashFXPPath %buf.Settings.FlashFXP
+  safeWriteIni %ini Settings Nick %buf.Settings.GlobalNick
+  safeWriteIni %ini Settings BotNick %buf.Settings.BotNick
+  safeWriteIni %ini Settings FTPUser %buf.Settings.FTPUser
+  safeWriteIni %ini Settings FlashAppData %buf.Settings.FlashAppData
+  safeWriteIni %ini Settings FTPCheck %buf.Settings.FTPCheck
+
+  set %siteInviteFTPCheck %buf.Settings.FTPCheck
+
   safeWriteIni %ini Settings SyncMode %buf.Settings.SyncMode
 
 }
@@ -619,6 +855,8 @@ alias siteinvite_save {
   ; ============================================================
 
   safeWriteIni %ini %currentSiteName name     %buf.Site.Name
+  safeWriteIni %ini %currentSiteName usernick %buf.Site.UserNick
+  safeWriteIni %ini %currentSiteName ftpuser  %buf.Site.FTPUser
   safeWriteIni %ini %currentSiteName botnick  %buf.Site.BotNick
   safeWriteIni %ini %currentSiteName network  %buf.Site.Network
 
@@ -626,24 +864,26 @@ alias siteinvite_save {
   ; Channels
   ; ============================================================
 
-  var %channels
+  var %rawChannels = $didtok(siteinviteDialog,110,44)
+  var %channels = $siteinvite_normalize_channel_csv(%rawChannels)
   var %ignore
   var %i = 1
   var %lines = $did(siteinviteDialog,110).lines
 
   while (%i <= %lines) {
 
-    var %channel = $did(siteinviteDialog,110,%i).text
-
-    %channels = $addtok(%channels,%channel,44)
-
-    if ($did(siteinviteDialog,110,%i).cstate == 1) {
-      %ignore = $addtok(%ignore,%channel,44)
+    if ($did(siteinviteDialog,110,%i).cstate == 0) {
+      var %channel = $siteinvite_clean_channel($did(siteinviteDialog,110,%i).text)
+      if (%channel) {
+        %ignore = $addtok(%ignore,%channel,44)
+      }
     }
 
     inc %i
 
   }
+
+  %ignore = $siteinvite_normalize_channel_csv(%ignore)
 
   if (%channels) {
     safeWriteIni %ini %currentSiteName channels %channels
@@ -671,7 +911,7 @@ alias siteinvite_save {
     var %ftp = $did(siteinviteDialog,120,%i).text
     %ftps = $addtok(%ftps,%ftp,44)
 
-    if ($did(siteinviteDialog,120,%i).cstate == 1) {
+    if ($did(siteinviteDialog,120,%i).cstate == 0) {
       %ftpignore = $addtok(%ftpignore,%ftp,44)
     }
 
@@ -690,6 +930,25 @@ alias siteinvite_save {
   } else {
     remini %ini %currentSiteName ftpsites_ignore
   }
+
+}
+
+; ------------------------------------------------------------------------------
+; Save current site and force the INI/main-script cache to refresh.
+; ------------------------------------------------------------------------------
+
+alias siteinvite_save_persist {
+
+  siteinvite_save
+
+  var %ini = %siteInviteIniPath
+
+  if ($isfile(%ini)) {
+    flushini $qt(%ini)
+  }
+
+  ; Force the main script's GetData() to reread the INI after a GUI change.
+  unset %iniFileMTime
 
 }
 
@@ -722,152 +981,68 @@ alias save_ignore_entire {
 }
 
 ; ------------------------------------------------------------------------------
-; Click: select site (save current buffer first, load new site)
+; Site list click: wait until the listcb checkbox state has settled.
 ; ------------------------------------------------------------------------------
 
 on *:DIALOG:siteinviteDialog:sclick:100:{
 
-  save_ignore_entire
-
-  var %selectedSiteName = $did(siteinviteDialog,100).seltext
-
-  if (!%selectedSiteName) {
+  if (%isCurrentlyLoading) {
     return
   }
 
-  ; Clicking the active site's checkbox must only update ignore_entire.
-  if (%selectedSiteName == %currentSiteName) {
-    return
-  }
+  ; AdiIRC documents sclick as the list/check event. The .cstate value has
+  ; historically been timing-sensitive here, so process the state after the
+  ; GUI event has completed.
+  set %siteInvitePendingCurrentSite %currentSiteName
+  set %siteInvitePendingSelectedSite $did(siteinviteDialog,100).seltext
+  set %siteInvitePendingSelectedLine $did(siteinviteDialog,100).sel
 
-  ; Save current site in buffer first
-  if (%currentSiteName) {
-
-    set %buf.Site.Name $did(siteinviteDialog,102).text
-    set %buf.Site.BotNick $did(siteinviteDialog,104).text
-    set %buf.Site.Network $did(siteinviteDialog,106).text
-
-    ; Channel save rows
-
-    var %lines = $did(siteinviteDialog,110).lines
-
-    if (%lines) {
-
-      var %jc = 1
-      var %chans
-
-      while (%jc <= %lines) {
-
-        var %txt = $did(siteinviteDialog,110,%jc).text
-        var %clean = $remove(%txt,#)
-
-        %chans = $addtok(%chans,%clean,44)
-
-        inc %jc
-
-      }
-
-      set %buf.Site.Channels $sortcsv(%chans)
-
-    } else {
-
-      unset %buf.Site.Channels
-
-    }
-
-    ; Build ignore from checked
-    var %cselnum = $did(siteinviteDialog,110).csel
-
-    if (%cselnum > 0) {
-
-      var %ign
-      var %k = 1
-
-      while (%k <= %cselnum) {
-
-        var %ln = $did(siteinviteDialog,110).csel(%k)
-        var %txt = $did(siteinviteDialog,110,%ln).text
-        var %clean = $remove(%txt,#)
-
-        %ign = $addtok(%ign,%clean,44)
-
-        inc %k
-
-      }
-
-      set %buf.Site.Ignore $sortcsv(%ign)
-
-    } else {
-
-      unset %buf.Site.Ignore
-
-    }
-
-    ; Build ftpsites
-
-    var %lines = $did(siteinviteDialog,120).lines
-
-    if (%lines) {
-
-      var %jc = 1
-      var %ftps
-
-      while (%jc <= %lines) {
-
-        var %txt = $did(siteinviteDialog,120,%jc).text
-
-        %ftps = $addtok(%ftps,%txt,44)
-
-        inc %jc
-
-      }
-
-      set %buf.Site.FTPSites $sortcsv(%ftps)
-
-    } else {
-
-      unset %buf.Site.FTPSites
-
-    }
-
-    ; Build ftpsitesignore
-    var %cselnum = $did(siteinviteDialog,120).csel
-
-    if (%cselnum > 0) {
-
-      var %ign
-      var %k = 1
-
-      while (%k <= %cselnum) {
-
-        var %ln = $did(siteinviteDialog,120).csel(%k)
-        var %txt = $did(siteinviteDialog,120,%ln).text
-
-        %ign = $addtok(%ign,%txt,44)
-
-        inc %k
-
-      }
-
-      set %buf.Site.FTPSitesIgnore $sortcsv(%ign)
-
-    } else {
-
-      unset %buf.Site.FTPSitesIgnore
-
-    }
-
-    siteinvite_save
-
-  }
-
-  ; Load selected site from on ini
-  siteinvite_load %selectedSiteName
+  .timerSiteInviteSiteClick off
+  .timerSiteInviteSiteClick -m 1 250 siteinvite_process_site_click
 
 }
 
 ; ------------------------------------------------------------------------------
-; Persist channel and FTP-site checkboxes independently of site selection.
+; Process site-list click after the checkbox state has settled.
+; ------------------------------------------------------------------------------
+
+alias siteinvite_process_site_click {
+
+  var %oldSite = %siteInvitePendingCurrentSite
+  var %newSite = %siteInvitePendingSelectedSite
+  var %newLine = %siteInvitePendingSelectedLine
+
+  unset %siteInvitePendingCurrentSite
+  unset %siteInvitePendingSelectedSite
+  unset %siteInvitePendingSelectedLine
+
+  if (!%newSite || !%newLine) {
+    return
+  }
+
+  ; Save the exact state of the row that was clicked.
+  var %checked = $did(siteinviteDialog,100,%newLine).cstate
+  var %ignoreState = $iif(%checked,0,1)
+  safeWriteIni %siteInviteIniPath %newSite ignore_entire %ignoreState
+
+  ; Save the site whose fields are currently displayed before switching away.
+  if (%oldSite) {
+    siteinvite_save_persist
+  } else {
+    flushini $qt(%siteInviteIniPath)
+    unset %iniFileMTime
+  }
+
+  ; Load the newly selected site only after its own active/inactive state is
+  ; already persisted.
+  if ($lower(%newSite) != $lower(%oldSite)) {
+    siteinvite_load %newSite
+  }
+
+}
+
+; ------------------------------------------------------------------------------
+; Persist channel and FTP-site checkbox state after the list click has settled.
 ; ------------------------------------------------------------------------------
 
 on *:DIALOG:siteinviteDialog:sclick:110,120:{
@@ -876,7 +1051,9 @@ on *:DIALOG:siteinviteDialog:sclick:110,120:{
     return
   }
 
-  siteinvite_save
+  ; Give AdiIRC time to finish the checkbox state change before reading cstate.
+  .timerSiteInviteListSave off
+  .timerSiteInviteListSave -m 1 250 siteinvite_save_persist
 
 }
 
@@ -902,7 +1079,6 @@ on *:DIALOG:siteinviteDialog:sclick:200:{
     if ($did(siteinviteDialog,100,%i).text == %newSiteName) {
 
       noop $input(Site: %newSiteName already exists! $crlf $crlf $crlf,i)
-
       return
 
     }
@@ -911,15 +1087,17 @@ on *:DIALOG:siteinviteDialog:sclick:200:{
 
   }
 
-  ; Add to listbox (locally), mark it and create empty buffer for it
+  ; Add to listbox (locally), mark it active and create empty buffer for it
   did -a siteinviteDialog 100 %newSiteName
-  did -c siteinviteDialog 100 $did(siteinviteDialog,100).lines
+  did -s siteinviteDialog 100 $did(siteinviteDialog,100).lines
 
   ; Save current site to buffer before we switch (if one was selected)
   if (%currentSiteName) {
 
     ; Same logic as in select-handler
     set %buf.Site.Name $did(siteinviteDialog,102).text
+    set %buf.Site.UserNick $did(siteinviteDialog,108).text
+    set %buf.Site.FTPUser $did(siteinviteDialog,112).text
     set %buf.Site.BotNick $did(siteinviteDialog,104).text
     set %buf.Site.Network $did(siteinviteDialog,106).text
 
@@ -935,7 +1113,7 @@ on *:DIALOG:siteinviteDialog:sclick:200:{
       while (%jc <= %lines) {
 
         var %txt = $did(siteinviteDialog,110,%jc).text
-        var %clean = $remove(%txt,#)
+        var %clean = $siteinvite_clean_channel(%txt)
 
         %chans = $addtok(%chans,%clean,44)
 
@@ -951,32 +1129,28 @@ on *:DIALOG:siteinviteDialog:sclick:200:{
 
     }
 
-    ; Build ignore from checked
-    var %cselnum = $did(siteinviteDialog,110).csel
+    ; Build ignore from unchecked rows (inactive channels).
+    var %ignore
+    var %ignoreIndex = 1
+    var %ignoreLines = $did(siteinviteDialog,110).lines
 
-    if (%cselnum > 0) {
+    while (%ignoreIndex <= %ignoreLines) {
+      if ($did(siteinviteDialog,110,%ignoreIndex).cstate == 0) {
 
-      var %ign
-      var %k = 1
+        var %ignoreText = $siteinvite_clean_channel($did(siteinviteDialog,110,%ignoreIndex).text)
 
-      while (%k <= %cselnum) {
-
-        var %ln = $did(siteinviteDialog,110).csel(%k)
-        var %txt = $did(siteinviteDialog,110,%ln).text
-        var %clean = $remove(%txt,#)
-
-        %ign = $addtok(%ign,%clean,44)
-
-        inc %k
+        %ignore = $addtok(%ignore,%ignoreText,44)
 
       }
 
-      set %buf.Site.Ignore $sortcsv(%ign)
+      inc %ignoreIndex
 
+    }
+
+    if (%ignore) {
+      set %buf.Site.Ignore $sortcsv(%ignore)
     } else {
-
       unset %buf.Site.Ignore
-
     }
 
     ; Build ftpsites
@@ -1005,31 +1179,28 @@ on *:DIALOG:siteinviteDialog:sclick:200:{
 
     }
 
-    ; Build ftpsitesignore
-    var %cselnum = $did(siteinviteDialog,120).csel
+    ; Build ftpsites_ignore from unchecked rows (inactive FTP-sites).
+    var %ftpIgnore
+    var %ftpIgnoreIndex = 1
+    var %ftpIgnoreLines = $did(siteinviteDialog,120).lines
 
-    if (%cselnum > 0) {
+    while (%ftpIgnoreIndex <= %ftpIgnoreLines) {
+      if ($did(siteinviteDialog,120,%ftpIgnoreIndex).cstate == 0) {
 
-      var %ign
-      var %k = 1
+        var %ftpIgnoreText = $did(siteinviteDialog,120,%ftpIgnoreIndex).text
 
-      while (%k <= %cselnum) {
-
-        var %ln = $did(siteinviteDialog,120).csel(%k)
-        var %txt = $did(siteinviteDialog,120,%ln).text
-
-        %ign = $addtok(%ign,%txt,44)
-
-        inc %k
+        %ftpIgnore = $addtok(%ftpIgnore,%ftpIgnoreText,44)
 
       }
 
-      set %buf.Site.FTPSitesIgnore $sortcsv(%ign)
+      inc %ftpIgnoreIndex
 
+    }
+
+    if (%ftpIgnore) {
+      set %buf.Site.FTPSitesIgnore $sortcsv(%ftpIgnore)
     } else {
-
       unset %buf.Site.FTPSitesIgnore
-
     }
 
     siteinvite_save
@@ -1040,7 +1211,20 @@ on *:DIALOG:siteinviteDialog:sclick:200:{
   set %currentSiteName %newSiteName
   set %buf.Site.Name %newSiteName
 
+  if (%buf.Settings.GlobalNick) {
+    set %buf.Site.UserNick %buf.Settings.GlobalNick
+  } else {
+    set %buf.Site.UserNick $me
+  }
+
+  if (%buf.Settings.FTPUser) {
+    set %buf.Site.FTPUser %buf.Settings.FTPUser
+  } else {
+    set %buf.Site.FTPUser %buf.Site.UserNick
+  }
+
   unset %buf.Site.BotNick
+  unset %buf.Site.FTPUser
   unset %buf.Site.Network
   unset %buf.Site.Channels
   unset %buf.Site.Ignore
@@ -1064,7 +1248,6 @@ on *:DIALOG:siteinviteDialog:sclick:201:{
   if (!%selectedSiteName) {
 
     noop $input(Select a site to edit first!,o)
-
     return
 
   }
@@ -1075,7 +1258,6 @@ on *:DIALOG:siteinviteDialog:sclick:201:{
   if (%newname == %selectedSiteName) {
 
     noop $input(You cannot rename the site to the same name!,o,Error!)
-
     return
 
   }
@@ -1092,7 +1274,6 @@ on *:DIALOG:siteinviteDialog:sclick:201:{
     if ($did(siteinviteDialog,100,%i).text == %newname) {
 
       noop $input(Site "%newname" already exists!,o)
-
       return
 
     }
@@ -1105,6 +1286,8 @@ on *:DIALOG:siteinviteDialog:sclick:201:{
   if (%currentSiteName) {
 
     set %buf.Site.Name $did(siteinviteDialog,102).text
+    set %buf.Site.UserNick $did(siteinviteDialog,108).text
+    set %buf.Site.FTPUser $did(siteinviteDialog,112).text
     set %buf.Site.BotNick $did(siteinviteDialog,104).text
     set %buf.Site.Network $did(siteinviteDialog,106).text
 
@@ -1132,32 +1315,28 @@ on *:DIALOG:siteinviteDialog:sclick:201:{
 
     }
 
-    ; Build ignore from checked
-    var %cselnum = $did(siteinviteDialog,110).csel
+    ; Build ignore from unchecked rows (inactive channels).
+    var %ignore
+    var %ignoreIndex = 1
+    var %ignoreLines = $did(siteinviteDialog,110).lines
 
-    if (%cselnum > 0) {
+    while (%ignoreIndex <= %ignoreLines) {
+      if ($did(siteinviteDialog,110,%ignoreIndex).cstate == 0) {
 
-      var %ign
-      var %k = 1
+        var %ignoreText = $siteinvite_clean_channel($did(siteinviteDialog,110,%ignoreIndex).text)
 
-      while (%k <= %cselnum) {
-
-        var %ln = $did(siteinviteDialog,110).csel(%k)
-        var %txt = $did(siteinviteDialog,110,%ln).text
-        var %clean = $remove(%txt,#)
-
-        %ign = $addtok(%ign,%clean,44)
-
-        inc %k
+        %ignore = $addtok(%ignore,%ignoreText,44)
 
       }
 
-      set %buf.Site.Ignore $sortcsv(%ign)
+      inc %ignoreIndex
 
+    }
+
+    if (%ignore) {
+      set %buf.Site.Ignore $sortcsv(%ignore)
     } else {
-
       unset %buf.Site.Ignore
-
     }
 
     ; Build ftpsites
@@ -1183,31 +1362,25 @@ on *:DIALOG:siteinviteDialog:sclick:201:{
 
     }
 
-    ; Build ftpsitesignore
-    var %cselnum = $did(siteinviteDialog,120).csel
+    ; Build ftpsites_ignore from unchecked rows (inactive FTP-sites).
+    var %ftpIgnore
+    var %ftpIgnoreIndex = 1
+    var %ftpIgnoreLines = $did(siteinviteDialog,120).lines
 
-    if (%cselnum > 0) {
-
-      var %ign
-      var %k = 1
-
-      while (%k <= %cselnum) {
-
-        var %ln = $did(siteinviteDialog,120).csel(%k)
-        var %txt = $did(siteinviteDialog,120,%ln).text
-
-        %ign = $addtok(%ign,%txt,44)
-
-        inc %k
-
+    while (%ftpIgnoreIndex <= %ftpIgnoreLines) {
+      if ($did(siteinviteDialog,120,%ftpIgnoreIndex).cstate == 0) {
+        var %ftpIgnoreText = $did(siteinviteDialog,120,%ftpIgnoreIndex).text
+        %ftpIgnore = $addtok(%ftpIgnore,%ftpIgnoreText,44)
       }
 
-      set %buf.Site.FTPSitesIgnore $sortcsv(%ign)
+      inc %ftpIgnoreIndex
 
+    }
+
+    if (%ftpIgnore) {
+      set %buf.Site.FTPSitesIgnore $sortcsv(%ftpIgnore)
     } else {
-
       unset %buf.Site.FTPSitesIgnore
-
     }
 
     siteinvite_save
@@ -1223,7 +1396,7 @@ on *:DIALOG:siteinviteDialog:sclick:201:{
   did -i siteinviteDialog 100 %selindex %newname
 
   if (%oldcheck == 1) {
-    did -c siteinviteDialog 100 %selindex
+    did -s siteinviteDialog 100 %selindex
   }
 
   ; Update current if it was the active site
@@ -1271,6 +1444,8 @@ on *:DIALOG:siteinviteDialog:sclick:202:{
     if (%currentSiteName && (%currentSiteName == %selectedSiteName)) {
 
       unset %buf.Site.Name
+      unset %buf.Site.UserNick
+      unset %buf.Site.FTPUser
       unset %buf.Site.BotNick
       unset %buf.Site.Network
       unset %buf.Site.Channels
@@ -1283,7 +1458,7 @@ on *:DIALOG:siteinviteDialog:sclick:202:{
 
     ; Remove from listbox (but INI will be updated first on close)
     did -d siteinviteDialog 100 $did(siteinviteDialog,100).sel
-    did -r siteinviteDialog 102,104,106,110,120
+    did -r siteinviteDialog 102,104,106,108,112,110,120
 
     ; Remove from INI immediately
     var %ini = %siteInviteIniPath
@@ -1297,7 +1472,7 @@ on *:DIALOG:siteinviteDialog:sclick:202:{
     unset %currentSiteName
     unset %buf.Site.*
 
-    did -r siteinviteDialog 102,104,106,110,120
+    did -r siteinviteDialog 102,104,106,108,112,110,120
 
   }
 
@@ -1333,7 +1508,6 @@ on *:DIALOG:siteinviteDialog:sclick:113:{
   if ($asc($left(%trimmedInputString,1)) != 35) {
 
     noop $input(You wrote: %trimmedInputString $+ $crlf $+ $crlf $+ It MUST begin with $chr(35),o,Error!)
-
     return
 
   }
@@ -1372,10 +1546,9 @@ on *:DIALOG:siteinviteDialog:sclick:113:{
 
   }
 
-  if ($istok(%normalizedChannelList,$remove(%channelName,#),44)) {
+  if ($istok(%normalizedChannelList,$siteinvite_clean_channel(%channelName),44)) {
 
     noop $input(Channel: %channelName already exists! $crlf $crlf $crlf,i)
-
     return
 
   }
@@ -1383,14 +1556,17 @@ on *:DIALOG:siteinviteDialog:sclick:113:{
   var %newRawChannelList
 
   if (%rawChannelString) {
-    %newRawChannelList = %rawChannelString $+ , $+ $remove(%channelName,#)
+    %newRawChannelList = %rawChannelString $+ , $+ $siteinvite_clean_channel(%channelName)
   } else {
-    %newRawChannelList = $remove(%channelName,#)
+    %newRawChannelList = $siteinvite_clean_channel(%channelName)
   }
 
   var %sortedNormalizedChannels = $sortcsv(%newRawChannelList)
 
   set %buf.Site.Channels %sortedNormalizedChannels
+
+  ; New channels start active, so they must not exist in the inactive list.
+  set %buf.Site.Ignore $sortcsv($remtok(%buf.Site.Ignore,$siteinvite_clean_channel(%channelName),1,44))
 
   ; Update ui from buffer
   siteinvite_refresh_ui
@@ -1401,10 +1577,9 @@ on *:DIALOG:siteinviteDialog:sclick:113:{
 
   while (%lineIndex <= %lineCount) {
 
-    if ($did(siteinviteDialog,110,%lineIndex).text == # $+ $remove(%channelName,#)) {
+    if ($did(siteinviteDialog,110,%lineIndex).text == # $+ $siteinvite_clean_channel(%channelName)) {
 
-      did -c siteinviteDialog 110 %lineIndex
-
+      did -s siteinviteDialog 110 %lineIndex
       break
 
     }
@@ -1458,14 +1633,13 @@ on *:DIALOG:siteinviteDialog:sclick:114:{
   if ($left(%newChannelWithHash,1) != $chr(35)) {
 
     noop $input(You wrote: %newChannelWithHash $+ $crlf $+ $crlf $+ It MUST begin with $chr(35),o,Error!)
-
     return
 
   }
 
   ; Clean names without # for storage
-  var %oldChannel = $remove(%oldChannelWithHash,#)
-  var %newChannel = $remove(%newChannelWithHash,#)
+  var %oldChannel = $siteinvite_clean_channel(%oldChannelWithHash)
+  var %newChannel = $siteinvite_clean_channel(%newChannelWithHash)
 
   ; Prepare clean list for duplicate check
   var %cleanRaw
@@ -1496,7 +1670,6 @@ on *:DIALOG:siteinviteDialog:sclick:114:{
   if (%newChannel == %oldChannel) {
 
     noop $input(You cannot rename the channel to the same name!,o,Error!)
-
     return
 
   }
@@ -1505,7 +1678,6 @@ on *:DIALOG:siteinviteDialog:sclick:114:{
   if ($istok(%cleanRaw,%newChannel,44)) {
 
     noop $input(# $+ The channel %newChannel already exists in the list!,o,Error!)
-
     return
 
   }
@@ -1538,13 +1710,18 @@ on *:DIALOG:siteinviteDialog:sclick:114:{
 
   }
 
-  set %buf.Site.Channels $sortcsv(%newList)
+  set %buf.Site.Channels $siteinvite_normalize_channel_csv(%newList)
 
-  ; Update ignore buffer if previously checked
-  if (%wasChecked) {
+  ; Keep the inactive-channel list synchronized after a rename.
+  if (%wasChecked == 1) {
 
+    ; The renamed channel is active, so it must not exist in "ignore".
+    set %buf.Site.Ignore $sortcsv($remtok(%buf.Site.Ignore,%oldChannel,1,44))
+
+  } else {
+
+    ; The renamed channel is inactive, so replace the old entry in "ignore".
     var %ignore = $remtok(%buf.Site.Ignore,%oldChannel,1,44)
-
     %ignore = $addtok(%ignore,%newChannel,44)
 
     set %buf.Site.Ignore $sortcsv(%ignore)
@@ -1576,7 +1753,7 @@ on *:DIALOG:siteinviteDialog:sclick:115:{
     return
   }
 
-  var %cleaned = $remove(%selectedLine,#)
+  var %cleaned = $siteinvite_clean_channel(%selectedLine)
 
   ; Remove from regular channels (with trim)
   var %raw = %buf.Site.Channels
@@ -1604,7 +1781,7 @@ on *:DIALOG:siteinviteDialog:sclick:115:{
 
   }
 
-  set %buf.Site.Channels $sortcsv(%newList)
+  set %buf.Site.Channels $siteinvite_normalize_channel_csv(%newList)
 
   ; Remove from ignore if it exists (case-insensitive)
   if (%buf.Site.Ignore) {
@@ -1676,7 +1853,6 @@ on *:DIALOG:siteinviteDialog:sclick:115:{
         if ($lower(%chan) == $lower(%ign)) {
 
           %found = $true
-
           break
 
         }
@@ -1762,7 +1938,6 @@ on *:DIALOG:siteinviteDialog:sclick:123:{
   if ($istok(%normalizedFTPList,%ftpName,44)) {
 
     noop $input(Site: %ftpName already exists! $crlf $crlf $crlf,i)
-
     return
 
   }
@@ -1779,6 +1954,9 @@ on *:DIALOG:siteinviteDialog:sclick:123:{
 
   set %buf.Site.FTPSites %sortedNormalizedFTP
 
+  ; New FTP-sites start active, so they must not exist in the inactive list.
+  set %buf.Site.FTPSitesIgnore $sortcsv($remtok(%buf.Site.FTPSitesIgnore,%ftpName,1,44))
+
   ; Update ui from buffer
   siteinvite_refresh_ui
 
@@ -1790,8 +1968,7 @@ on *:DIALOG:siteinviteDialog:sclick:123:{
 
     if ($did(siteinviteDialog,120,%lineIndex).text == %ftpName) {
 
-      did -c siteinviteDialog 120 %lineIndex
-
+      did -s siteinviteDialog 120 %lineIndex
       break
 
     }
@@ -1847,11 +2024,8 @@ on *:DIALOG:siteinviteDialog:sclick:124:{
 
   ; Check if the user typed the same name
   if (%newName == %oldFTPName) {
-
     noop $input(You cannot rename the site to the same name!,o,Error!)
-
     return
-
   }
 
   while (%i <= %count) {
@@ -1881,11 +2055,16 @@ on *:DIALOG:siteinviteDialog:sclick:124:{
 
   set %buf.Site.FTPSites %sortedList
 
-  ; If was checked, update ignore buffer too
+  ; Keep the inactive FTP-site list synchronized after a rename.
   if (%wasChecked == 1) {
 
-    var %newIgnore = $remtok(%buf.Site.FTPSitesIgnore,%oldFTPName,1,44)
+    ; The renamed FTP-site is active, so it must not exist in "ftpsites_ignore".
+    set %buf.Site.FTPSitesIgnore $sortcsv($remtok(%buf.Site.FTPSitesIgnore,%oldFTPName,1,44))
 
+  } else {
+
+    ; The renamed FTP-site is inactive, so replace the old entry in "ftpsites_ignore".
+    var %newIgnore = $remtok(%buf.Site.FTPSitesIgnore,%oldFTPName,1,44)
     %newIgnore = $addtok(%newIgnore,%newName,44)
 
     set %buf.Site.FTPSitesIgnore $sortcsv(%newIgnore)
@@ -2018,7 +2197,6 @@ on *:DIALOG:siteinviteDialog:sclick:125:{
         if ($lower(%chan) == $lower(%ign)) {
 
           %found = $true
-
           break
 
         }
@@ -2038,9 +2216,7 @@ on *:DIALOG:siteinviteDialog:sclick:125:{
     set %buf.Site.FTPSitesIgnore $sortcsv(%cleanignore)
 
   } elseif (!%buf.Site.FTPSites) {
-
     unset %buf.Site.FTPSitesIgnore
-
   }
 
   siteinvite_refresh_ui
@@ -2054,15 +2230,44 @@ on *:DIALOG:siteinviteDialog:sclick:125:{
 
 on *:DIALOG:siteinviteDialog:edit:*:{
 
-  if (!%currentSiteName || %isCurrentlyLoading) {
+  if (%isCurrentlyLoading) {
     return
   }
 
   var %id = $did
   var %text = $did($dname,$did).text
 
+  ; Global settings must be handled before the current-site guard.
+  ; They are independent of site selection.
+  if (%id == 21) {
+    set %buf.Settings.GlobalNick %text
+    save_settings
+    return
+
+  } elseif (%id == 27) {
+
+    set %buf.Settings.BotNick %text
+    save_settings
+    return
+
+  } elseif (%id == 29) {
+
+    set %buf.Settings.FTPUser %text
+    save_settings
+    return
+
+  }
+
+  if (!%currentSiteName) {
+    return
+  }
+
   if (%id == 102) {
     set %buf.Site.Name %text
+  } elseif (%id == 108) {
+    set %buf.Site.UserNick %text
+  } elseif (%id == 112) {
+    set %buf.Site.FTPUser %text
   } elseif (%id == 104) {
     set %buf.Site.BotNick %text
   } elseif (%id == 106) {
@@ -2070,6 +2275,21 @@ on *:DIALOG:siteinviteDialog:edit:*:{
   }
 
   siteinvite_save
+
+}
+
+; ------------------------------------------------------------------------------
+; Save FlashFXP data path
+; ------------------------------------------------------------------------------
+
+on *:DIALOG:siteinviteDialog:edit:24:{
+
+  if (%isCurrentlyLoading) {
+    return
+  }
+
+  set %buf.Settings.FlashAppData $did(siteinviteDialog,24).text
+  save_settings
 
 }
 
@@ -2084,13 +2304,28 @@ on *:DIALOG:siteinviteDialog:sclick:17:{
   if (%path) {
 
     did -ra siteinviteDialog 16 %path
-
     set %buf.Settings.FlashFXP %path
-
     save_settings
 
   }
 
+}
+
+; ------------------------------------------------------------------------------
+; Browse FlashFXP data directory
+; ------------------------------------------------------------------------------
+
+on *:DIALOG:siteinviteDialog:sclick:25:{
+
+  var %path = $sdir(Select FlashFXP data directory)
+
+  if (%path) {
+
+    did -ra siteinviteDialog 24 %path
+    set %buf.Settings.FlashAppData %path
+    save_settings
+
+  }
 }
 
 ; ------------------------------------------------------------------------------
@@ -2099,12 +2334,11 @@ on *:DIALOG:siteinviteDialog:sclick:17:{
 
 on *:DIALOG:siteinviteDialog:sclick:32:{
 
-  var %newIniFilePath = $sfile(Select configuration file,*.dat)
+  var %newIniFilePath = $sfile(Select configuration file,*.ini)
 
   if (%newIniFilePath) {
     siteinvite_activate_config %newIniFilePath
   }
-
 }
 
 on *:DIALOG:siteinviteDialog:edit:31:{
@@ -2115,7 +2349,7 @@ on *:DIALOG:siteinviteDialog:edit:31:{
 
   var %newIniFilePath = $did(siteinviteDialog,31).text
 
-  if ($lower($right(%newIniFilePath,4)) != .dat) {
+  if ($lower($right(%newIniFilePath,4)) != .ini) {
     return
   }
 
@@ -2156,13 +2390,9 @@ on *:DIALOG:siteinviteDialog:dclick:100:{
   var %flashFXPExecutablePath = $did(siteinviteDialog,16).text
 
   if (%selectedSiteName && $isfile(%flashFXPExecutablePath)) {
-
     run $qt(%flashFXPExecutablePath) -c %selectedSiteName
-
   } elseif (%selectedSiteName) {
-
     noop $input(FlashFXP path not set or executable not found!,o,Error)
-
   }
 }
 
@@ -2187,61 +2417,34 @@ on *:DIALOG:siteinviteDialog:close:*:{
   if (%currentSiteName) {
 
     set %buf.Site.Name $did(siteinviteDialog,102).text
+    set %buf.Site.UserNick $did(siteinviteDialog,108).text
+    set %buf.Site.FTPUser $did(siteinviteDialog,112).text
     set %buf.Site.BotNick $did(siteinviteDialog,104).text
     set %buf.Site.Network $did(siteinviteDialog,106).text
 
-    ; Build channels
-    var %lines = $did(siteinviteDialog,110).lines
+    ; Build channels and inactive-channel list from the actual listcb rows.
+    var %rawChannels = $didtok(siteinviteDialog,110,44)
+    set %buf.Site.Channels $siteinvite_normalize_channel_csv(%rawChannels)
 
-    if (%lines) {
+    var %ignore
+    var %ignoreIndex = 1
+    var %ignoreLines = $did(siteinviteDialog,110).lines
 
-      var %jc = 1
-      var %chans
+    while (%ignoreIndex <= %ignoreLines) {
+      if ($did(siteinviteDialog,110,%ignoreIndex).cstate == 0) {
 
-      while (%jc <= %lines) {
+        var %ignoreText = $siteinvite_clean_channel($did(siteinviteDialog,110,%ignoreIndex).text)
 
-        var %txt = $did(siteinviteDialog,110,%jc).text
-        var %clean = $remove(%txt,#)
-
-        %chans = $addtok(%chans,%clean,44)
-
-        inc %jc
-
+        if (%ignoreText) {
+          %ignore = $addtok(%ignore,%ignoreText,44)
+        }
       }
 
-      set %buf.Site.Channels $sortcsv(%chans)
-
-    } else {
-
-      unset %buf.Site.Channels
+      inc %ignoreIndex
 
     }
 
-    ; Build ignore
-    var %lines = $did(siteinviteDialog,110).lines
-    var %ign
-    var %i = 1
-
-    while (%i <= %lines) {
-
-      if ($did(siteinviteDialog,110,%i).cstate == 1) {
-
-        var %txt = $did(siteinviteDialog,110,%i).text
-        var %clean = $remove(%txt,#)
-
-        %ign = $addtok(%ign,%clean,44)
-
-      }
-
-      inc %i
-
-    }
-
-    if (%ign) {
-      set %buf.Site.Ignore $sortcsv(%ign)
-    } else {
-      unset %buf.Site.Ignore
-    }
+    set %buf.Site.Ignore $siteinvite_normalize_channel_csv(%ignore)
 
     ; Build ftpsites
     var %lines = $did(siteinviteDialog,120).lines
@@ -2254,9 +2457,7 @@ on *:DIALOG:siteinviteDialog:close:*:{
       while (%jc <= %lines) {
 
         var %txt = $did(siteinviteDialog,120,%jc).text
-
         %ftps = $addtok(%ftps,%txt,44)
-
         inc %jc
 
       }
@@ -2264,38 +2465,30 @@ on *:DIALOG:siteinviteDialog:close:*:{
       set %buf.Site.FTPSites $sortcsv(%ftps)
 
     } else {
-
       unset %buf.Site.FTPSites
-
     }
 
-    ; Build ftpsitesignore
-    var %lines = $did(siteinviteDialog,120).lines
-    var %ign
-    var %i = 1
+    ; Build ftpsites_ignore from unchecked rows (inactive FTP-sites).
+    var %ftpIgnore
+    var %ftpIgnoreIndex = 1
+    var %ftpIgnoreLines = $did(siteinviteDialog,120).lines
 
-    while (%i <= %lines) {
+    while (%ftpIgnoreIndex <= %ftpIgnoreLines) {
+      if ($did(siteinviteDialog,120,%ftpIgnoreIndex).cstate == 0) {
 
-      if ($did(siteinviteDialog,120,%i).cstate == 1) {
-
-        var %txt = $did(siteinviteDialog,120,%i).text
-
-        %ign = $addtok(%ign,%txt,44)
+        var %ftpIgnoreText = $did(siteinviteDialog,120,%ftpIgnoreIndex).text
+        %ftpIgnore = $addtok(%ftpIgnore,%ftpIgnoreText,44)
 
       }
 
-      inc %i
+      inc %ftpIgnoreIndex
 
     }
 
-    if (%ign) {
-
-      set %buf.Site.FTPSitesIgnore $sortcsv(%ign)
-
+    if (%ftpIgnore) {
+      set %buf.Site.FTPSitesIgnore $sortcsv(%ftpIgnore)
     } else {
-
       unset %buf.Site.FTPSitesIgnore
-
     }
 
     siteinvite_save
@@ -2319,7 +2512,6 @@ on *:DIALOG:siteinviteDialog:close:*:{
   while (%i <= %lineCount) {
 
     %listedSites = $addtok(%listedSites,$did(siteinviteDialog,100,%i).text,44)
-
     inc %i
 
   }
@@ -2336,9 +2528,7 @@ on *:DIALOG:siteinviteDialog:close:*:{
     var %sect = $v1
 
     if (%sect != Settings) {
-
       %iniSites = $addtok(%iniSites,%sect,44)
-
     }
 
     inc %idx
@@ -2378,7 +2568,6 @@ on *:DIALOG:siteinviteDialog:close:*:{
     if (%site == %currentSiteName) {
 
       inc %z
-
       continue
 
     }
@@ -2391,6 +2580,13 @@ on *:DIALOG:siteinviteDialog:close:*:{
     inc %z
 
   }
+
+  if ($isfile(%ini)) {
+    flushini $qt(%ini)
+  }
+
+  unset %iniFileMTime
+
 }
 
 ; ------------------------------------------------------------------------------
@@ -2398,7 +2594,9 @@ on *:DIALOG:siteinviteDialog:close:*:{
 ; ------------------------------------------------------------------------------
 
 menu * {
+
   SiteInvite Manager
   .Open:/siteinvite
   .Reload:load -rs $qt($scriptdir $+ SiteInvite.mrc)
+
 }
