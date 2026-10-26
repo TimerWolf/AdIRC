@@ -1,14 +1,10 @@
 ;######################################
 ; AdIRC: SiteInvite-Interface         #
-; Revision: 7                         #
+; Revision: 8                         #
 ; Date created: 05/09/2026            #
-; Date last modified: 03/10/2026      #
+; Date last modified: 26/10/2026      #
 ; Author: Whiskey                     #
 ; #####################################
-
-alias siteinvite {
-  dialog -m siteinviteDialog siteinviteDialog
-}
 
 ; ------------------------------------------------------------------------------
 ; Safe ini write helper
@@ -40,7 +36,7 @@ alias stripHashCSV {
 
     var %token = $gettok($1-,%currentIndex,44)
 
-    if ($left(%token,1) == #) {
+    if ($left(%token,1) == $chr(35)) {
       %token = $remove(%token,1,1)
     }
 
@@ -84,7 +80,7 @@ alias addHashCSV {
 
   while (%currentIndex <= %tokenCount) {
 
-    %outputTokenList = %outputTokenList $+ # $+ $gettok($1-,%currentIndex,44)
+    %outputTokenList = %outputTokenList $+ $chr(35) $+ $gettok($1-,%currentIndex,44)
 
     if (%currentIndex < %tokenCount) {
       %outputTokenList = %outputTokenList $+ ,
@@ -105,63 +101,80 @@ alias addHashCSV {
 alias siteinvite_clean_channel {
 
   var %channel = $1-
+  var %hash = $chr(35)
 
+  ; Trim surrounding spaces.
   while ($left(%channel,1) == $chr(32)) {
     %channel = $mid(%channel,2)
   }
 
   while ($right(%channel,1) == $chr(32)) {
-    %channel = $left(%channel,$calc($len(%channel)-1))
+    %channel = $left(%channel,$calc($len(%channel) - 1))
   }
 
-  ; Store channels without a leading '#'.
-  while ($left(%channel,1) == #) {
+  ; Canonical channel format: exactly one leading IRC '#'.
+  while ($left(%channel,1) == %hash) {
     %channel = $mid(%channel,2)
   }
+  if (%channel) {
+    %channel = %hash $+ %channel
+  }
+
 
   return %channel
-
 }
 
 ; ------------------------------------------------------------------------------
-; Normalize a channel CSV, including legacy values where two channel rows
-; were accidentally concatenated as '#channel1#channel2'.
+; Repair a legacy channel token if the current channel name was accidentally
+; prefixed repeatedly to another channel name. This only removes a repeated
+; prefix; an exact channel name is preserved.
 ; ------------------------------------------------------------------------------
 
 alias siteinvite_normalize_channel_csv {
 
   var %input = $1-
   var %output
+  var %unique
   var %i = 1
   var %count = $numtok(%input,44)
+  var %token
+  var %j
+  var %uniqueCount
+  var %seen
 
   while (%i <= %count) {
 
-    var %token = $siteinvite_clean_channel($gettok(%input,%i,44))
-
-    while ($pos(%token,#,1)) {
-
-      var %hashPos = $pos(%token,#,1)
-      var %leftPart = $siteinvite_clean_channel($left(%token,$calc(%hashPos - 1)))
-      var %rightPart = $siteinvite_clean_channel($mid(%token,$calc(%hashPos + 1)))
-
-      if (%leftPart) {
-        %output = $addtok(%output,%leftPart,44)
-      }
-
-      %token = %rightPart
-
-    }
+    %token = $siteinvite_clean_channel($gettok(%input,%i,44))
 
     if (%token) {
-      %output = $addtok(%output,%token,44)
+
+      %seen = 0
+      %j = 1
+      %uniqueCount = $numtok(%unique,44)
+
+      while (%j <= %uniqueCount) {
+
+        if ($lower($gettok(%unique,%j,44)) == $lower(%token)) {
+
+          %seen = 1
+          break
+
+        }
+
+        inc %j
+
+      }
+
+      if (!%seen) {
+        %unique = $addtok(%unique,%token,44)
+      }
     }
 
     inc %i
 
   }
 
-  return $sorttok(%output,44)
+  return $sorttok(%unique,44)
 
 }
 
@@ -592,11 +605,7 @@ alias siteinvite_refresh_ui {
 
     while (%i <= %c) {
 
-      var %displayChannel = $gettok(%buf.Site.Channels,%i,44)
-
-      if ($left(%displayChannel,1) != #) {
-        %displayChannel = # $+ %displayChannel
-      }
+      var %displayChannel = $siteinvite_clean_channel($gettok(%buf.Site.Channels,%i,44))
 
       did -a siteinviteDialog 110 %displayChannel
 
@@ -611,7 +620,7 @@ alias siteinvite_refresh_ui {
     while (%lineIndex <= %lineCount) {
 
       var %rowText = $did(siteinviteDialog,110,%lineIndex).text
-      var %rowClean = $remove(%rowText,#)
+      var %rowClean = $remove(%rowText,$chr(35))
       var %isIgnored = 0
 
       if (%buf.Site.Ignore) {
@@ -620,7 +629,7 @@ alias siteinvite_refresh_ui {
         var %y = 1
 
         while (%y <= %igncount) {
-          var %ign = $remove($gettok(%buf.Site.Ignore,%y,44),#)
+          var %ign = $remove($gettok(%buf.Site.Ignore,%y,44),$chr(35))
 
           if ($lower(%rowClean) == $lower(%ign)) {
             %isIgnored = 1
@@ -864,25 +873,33 @@ alias siteinvite_save {
   ; Channels
   ; ============================================================
 
-  var %rawChannels = $didtok(siteinviteDialog,110,44)
-  var %channels = $siteinvite_normalize_channel_csv(%rawChannels)
+  var %rawChannels
+  var %channels
   var %ignore
   var %i = 1
   var %lines = $did(siteinviteDialog,110).lines
 
+  ; Build the channel CSV from each displayed row explicitly.
+  ; This avoids list-control serialization joining or altering channel names.
   while (%i <= %lines) {
 
-    if ($did(siteinviteDialog,110,%i).cstate == 0) {
-      var %channel = $siteinvite_clean_channel($did(siteinviteDialog,110,%i).text)
-      if (%channel) {
+    var %channel = $siteinvite_clean_channel($did(siteinviteDialog,110,%i).text)
+
+    if (%channel) {
+
+      %rawChannels = $addtok(%rawChannels,%channel,44)
+
+      if ($did(siteinviteDialog,110,%i).cstate == 0) {
         %ignore = $addtok(%ignore,%channel,44)
       }
+
     }
 
     inc %i
 
   }
 
+  %channels = $siteinvite_normalize_channel_csv(%rawChannels)
   %ignore = $siteinvite_normalize_channel_csv(%ignore)
 
   if (%channels) {
@@ -1301,7 +1318,7 @@ on *:DIALOG:siteinviteDialog:sclick:201:{
 
       while (%jc <= %lines) {
 
-        %chans = $addtok(%chans,$remove($did(siteinviteDialog,110,%jc).text,#),44)
+        %chans = $addtok(%chans,$remove($did(siteinviteDialog,110,%jc).text,$chr(35)),44)
 
         inc %jc
 
@@ -1488,7 +1505,7 @@ on *:DIALOG:siteinviteDialog:sclick:113:{
     return
   }
 
-  var %rawInputString = $input(The channel MUST start with #,e)
+  var %rawInputString = $input(The channel MUST start with $chr(35),e)
 
   if (!%rawInputString) {
     return
@@ -1577,7 +1594,7 @@ on *:DIALOG:siteinviteDialog:sclick:113:{
 
   while (%lineIndex <= %lineCount) {
 
-    if ($did(siteinviteDialog,110,%lineIndex).text == # $+ $siteinvite_clean_channel(%channelName)) {
+    if ($did(siteinviteDialog,110,%lineIndex).text == $chr(35) $+ $siteinvite_clean_channel(%channelName)) {
 
       did -s siteinviteDialog 110 %lineIndex
       break
@@ -1650,7 +1667,7 @@ on *:DIALOG:siteinviteDialog:sclick:114:{
 
     var %tok = $gettok(%buf.Site.Channels,%i,44)
 
-    %tok = $remove(%tok,#)
+    %tok = $remove(%tok,$chr(35))
 
     while ($left(%tok,1) == $chr(32)) {
       %tok = $mid(%tok,2)
@@ -1677,7 +1694,7 @@ on *:DIALOG:siteinviteDialog:sclick:114:{
   ; Check duplicate early
   if ($istok(%cleanRaw,%newChannel,44)) {
 
-    noop $input(# $+ The channel %newChannel already exists in the list!,o,Error!)
+    noop $input($chr(35) $+ The channel %newChannel already exists in the list!,o,Error!)
     return
 
   }
@@ -2423,20 +2440,22 @@ on *:DIALOG:siteinviteDialog:close:*:{
     set %buf.Site.Network $did(siteinviteDialog,106).text
 
     ; Build channels and inactive-channel list from the actual listcb rows.
-    var %rawChannels = $didtok(siteinviteDialog,110,44)
-    set %buf.Site.Channels $siteinvite_normalize_channel_csv(%rawChannels)
-
+    var %rawChannels
     var %ignore
     var %ignoreIndex = 1
     var %ignoreLines = $did(siteinviteDialog,110).lines
 
+    ; Build both lists from row text, never from a serialized list-control value.
     while (%ignoreIndex <= %ignoreLines) {
-      if ($did(siteinviteDialog,110,%ignoreIndex).cstate == 0) {
 
-        var %ignoreText = $siteinvite_clean_channel($did(siteinviteDialog,110,%ignoreIndex).text)
+      var %rowChannel = $siteinvite_clean_channel($did(siteinviteDialog,110,%ignoreIndex).text)
 
-        if (%ignoreText) {
-          %ignore = $addtok(%ignore,%ignoreText,44)
+      if (%rowChannel) {
+
+        %rawChannels = $addtok(%rawChannels,%rowChannel,44)
+
+        if ($did(siteinviteDialog,110,%ignoreIndex).cstate == 0) {
+          %ignore = $addtok(%ignore,%rowChannel,44)
         }
       }
 
@@ -2444,6 +2463,7 @@ on *:DIALOG:siteinviteDialog:close:*:{
 
     }
 
+    set %buf.Site.Channels $siteinvite_normalize_channel_csv(%rawChannels)
     set %buf.Site.Ignore $siteinvite_normalize_channel_csv(%ignore)
 
     ; Build ftpsites
