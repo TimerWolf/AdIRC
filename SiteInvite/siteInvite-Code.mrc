@@ -1,8 +1,8 @@
 ; #####################################
 ; AdIRC: SiteInvite-Code              #
-; Revision: 6                         #
+; Revision: 7                         #
 ; Date created: 05/09/2026            #
-; Date last modified: 03/10/2026      #
+; Date last modified: 26/10/2026      #
 ; Author: Whiskey                     #
 ; #####################################
 
@@ -89,66 +89,6 @@ alias -l einvite {
   } else {
     isSynchronize $network %msg
   }
-}
-
-; =========================================================
-; Normalize channel CSV data.
-; Storage is comma-separated and may contain an accidental second '#' when
-; older interface versions concatenated channel rows. Treat that '#' as a
-; channel boundary so malformed legacy data cannot become a real IRC target.
-; =========================================================
-alias siteinvite_normalize_channels {
-
-  var %input = $1-
-  var %output
-  var %i = 1
-  var %count = $numtok(%input,44)
-
-  while (%i <= %count) {
-
-    var %token = $gettok(%input,%i,44)
-
-    while ($left(%token,1) == $chr(32)) {
-      %token = $mid(%token,2)
-    }
-
-    while ($right(%token,1) == $chr(32)) {
-      %token = $left(%token,$calc($len(%token)-1))
-    }
-
-    if (%token) {
-
-      ; A channel starts with '#'. An additional '#' indicates an
-      ; accidentally concatenated channel from malformed legacy data.
-      while ($left(%token,1) == #) {
-        %token = $mid(%token,2)
-      }
-
-      while ($pos(%token,#,1)) {
-
-        var %hashPos = $pos(%token,#,1)
-        var %leftPart = $left(%token,$calc(%hashPos - 1))
-        var %rightPart = $mid(%token,$calc(%hashPos + 1))
-
-        if (%leftPart) {
-          %output = $addtok(%output,%leftPart,44)
-        }
-
-        %token = %rightPart
-
-      }
-
-      if (%token) {
-        %output = $addtok(%output,%token,44)
-      }
-    }
-
-    inc %i
-
-  }
-
-  return $sorttok(%output,44)
-
 }
 
 ; =========================================================
@@ -347,7 +287,6 @@ alias isCheck {
   }
 
   set %siteInviteLastCheckRun $ctime
-
   ; The interface can change the INI independently of this script.
   ; Reload once at the start of every periodic run so inactive Site/Channel
   ; states are never hidden behind a stale mtime cache.
@@ -430,7 +369,6 @@ alias isCheck {
       }
 
       var %channelList = $GetSite(%site,channels)
-      %channelList = $siteinvite_normalize_channels(%channelList)
 
       if (!%channelList) {
 
@@ -455,26 +393,11 @@ alias isCheck {
 
           ; The "ignore" key contains only INACTIVE channels.
           ; A channel is active when it is in "channels" and NOT in "ignore".
-          var %ignoredChannels = $siteinvite_normalize_channels($GetSite(%site,ignore))
+          var %ignoredChannels = $GetSite(%site,ignore)
           var %channelIgnored = 0
-          var %ignoreIndex = 1
-          var %ignoreCount = $numtok(%ignoredChannels,44)
 
-          while (%ignoreIndex <= %ignoreCount) {
-
-            var %ignoredChannel = $gettok(%ignoredChannels,%ignoreIndex,44)
-
-            if ($left(%ignoredChannel,1) != #) {
-              %ignoredChannel = # $+ %ignoredChannel
-            }
-
-            if ($lower(%ignoredChannel) == %channel) {
-              %channelIgnored = 1
-              break
-            }
-
-            inc %ignoreIndex
-
+          if (%ignoredChannels && $istok(%ignoredChannels,%channel,44)) {
+            %channelIgnored = 1
           }
 
           if (%channelIgnored) {
@@ -723,7 +646,7 @@ alias isInvite {
 
   }
 
-  ; Bot invites require us to be present in the channel.
+  ; Final safety checks before starting FTP.
   if (%target == Bot && !$nick(%channel,$me)) {
 
     if (%debug) {
@@ -774,7 +697,6 @@ alias isInvite {
 
   }
 
-  ; Final safety checks before starting FTP.
   if (%target == Bot && !$nick(%channel,$me)) {
     return
   }
@@ -834,25 +756,10 @@ alias isSite {
 
     if (!%siteNetwork || $lower(%siteNetwork) == $lower($network)) {
 
-      var %channels = $siteinvite_normalize_channels($GetSite(%site,channels))
-      var %normChannels
-      var %chIdx = 1
-      var %chCnt = $numtok(%channels,44)
+      var %channels = $GetSite(%site,channels)
 
-      while (%chIdx <= %chCnt) {
+      if ($istok(%channels,%channel,44)) {
 
-        var %cTok = $gettok(%channels,%chIdx,44)
-
-        if ($left(%cTok,1) != #) {
-          %cTok = # $+ %cTok
-        }
-
-        %normChannels = $addtok(%normChannels,$lower(%cTok),44)
-        inc %chIdx
-
-      }
-
-      if ($istok(%normChannels,%channel,44)) {
         if ($GetSite(%site,ignore_entire) == 1) {
 
           %inactiveSiteFound = 1
@@ -860,29 +767,9 @@ alias isSite {
 
         } else {
 
-          var %ignoredChannels = $siteinvite_normalize_channels($GetSite(%site,ignore))
-          var %ignoreIndex = 1
-          var %ignoreCount = $numtok(%ignoredChannels,44)
-          var %isIgnored = 0
+          var %ignoredChannels = $GetSite(%site,ignore)
 
-          while (%ignoreIndex <= %ignoreCount) {
-
-            var %ignoredChannel = $gettok(%ignoredChannels,%ignoreIndex,44)
-
-            if ($left(%ignoredChannel,1) != #) {
-              %ignoredChannel = # $+ %ignoredChannel
-            }
-
-            if ($lower(%ignoredChannel) == %channel) {
-              %isIgnored = 1
-              break
-            }
-
-            inc %ignoreIndex
-
-          }
-
-          if (%isIgnored) {
+          if (%ignoredChannels && $istok(%ignoredChannels,%channel,44)) {
 
             %inactiveChannelFound = 1
             %inactiveChannelSite = %site
@@ -1126,7 +1013,7 @@ alias isFTP {
 
   %flashPath = $remove(%flashPath,$chr(34))
 
-  if (%flashPath && $right(%flashPath,1) != \) {
+  if (%flashPath && $right(%flashPath,1) != \Base) {
     %flashPath = %flashPath $+ \
   }
 
