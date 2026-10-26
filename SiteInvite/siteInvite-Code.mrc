@@ -1,6 +1,6 @@
 ; #####################################
 ; AdIRC: SiteInvite-Code              #
-; Revision: 7                         #
+; Revision: 8                         #
 ; Date created: 05/09/2026            #
 ; Date last modified: 26/10/2026      #
 ; Author: Whiskey                     #
@@ -287,6 +287,7 @@ alias isCheck {
   }
 
   set %siteInviteLastCheckRun $ctime
+
   ; The interface can change the INI independently of this script.
   ; Reload once at the start of every periodic run so inactive Site/Channel
   ; states are never hidden behind a stale mtime cache.
@@ -353,19 +354,19 @@ alias isCheck {
 
     } else {
 
+      ; Nickname precedence: Site -> Global.
+      ; For an explicit invite, the requested channel user's nick is carried
+      ; separately as %targetNick and remains the final fallback.
       var %botNick = $GetSite(%site,botnick)
-      var %userNick = $GetSite(%site,usernick)
 
       if (!%botNick) {
         %botNick = %globalBotNick
       }
 
-      if (!%userNick) {
-        %userNick = %globalNick
-      }
+      var %userNick = $GetSite(%site,usernick)
 
       if (!%userNick) {
-        %userNick = $me
+        %userNick = %globalNick
       }
 
       var %channelList = $GetSite(%site,channels)
@@ -411,8 +412,8 @@ alias isCheck {
 
           }
 
-          ; User check is performed only when enabled.
-          if (%checkUser) {
+          ; User check is performed only when enabled and a nickname is configured.
+          if (%checkUser && %userNick) {
 
             %target = User
 
@@ -923,15 +924,28 @@ alias isFTP {
   var %error = $GetSetting(Error)
   var %ftpCheck = $GetSetting(FTPCheck)
 
-  ; FTPUser is independent from the IRC target nick. A site-specific FTPUser
-  ; overrides the global FTPUser, and the IRC target nick remains the final
-  ; backward-compatible fallback when no FTPUser is configured.
-  var %ftpUser = $GetSite(%site,ftpuser)
+  ; Resolve the FlashFXP login independently from the IRC nickname.
+  ; Required order: Site FTP name -> Global FTP name -> explicit channel target nick.
+  ; Do not fall back through Bot/User nickname settings.
+  var %ftpUser
 
-  if (!%ftpUser) {
-    %ftpUser = $GetSetting(FTPUser)
+  if (%target == Bot) {
+    %ftpUser = $GetSite(%site,ftpbot)
+
+    if (!%ftpUser) {
+      %ftpUser = $GetSetting(FTPBot)
+    }
+
+  } else {
+
+    %ftpUser = $GetSite(%site,ftpuser)
+
+    if (!%ftpUser) {
+      %ftpUser = $GetSetting(FTPUser)
+    }
   }
 
+  ; The explicit nick being invited is the final fallback (e.g. "This").
   if (!%ftpUser) {
     %ftpUser = %targetNick
   }
